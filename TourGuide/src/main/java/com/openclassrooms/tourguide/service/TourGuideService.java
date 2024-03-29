@@ -17,11 +17,14 @@ import tripPricer.TripPricer;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.*;
+import java.util.concurrent.ForkJoinPool;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
 @Service
 public class TourGuideService {
+    public static final int PARALLELISM = 1000;
+
     private Logger logger = LoggerFactory.getLogger(TourGuideService.class);
     private final GpsUtil gpsUtil;
     private final RewardsService rewardsService;
@@ -83,6 +86,13 @@ public class TourGuideService {
         user.addToVisitedLocations(visitedLocation);
         rewardsService.calculateRewards(user);
         return visitedLocation;
+    }
+
+    public void trackUserLocation(List<User> users) {
+        ForkJoinPool customThreadPool = new ForkJoinPool(PARALLELISM);// je fixe le size du pool de threads
+        customThreadPool.submit(() ->
+                users.parallelStream().forEach(this::trackUserLocation)
+        ).join();
     }
 
     public List<Attraction> getNearByAttractions(VisitedLocation visitedLocation) {

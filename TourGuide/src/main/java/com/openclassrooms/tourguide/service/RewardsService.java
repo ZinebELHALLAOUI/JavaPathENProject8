@@ -10,17 +10,23 @@ import org.springframework.stereotype.Service;
 import rewardCentral.RewardCentral;
 
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executor;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ForkJoinPool;
 
 @Service
 public class RewardsService {
+    public static final int PARALLELISM = 1000;
     private static final double STATUTE_MILES_PER_NAUTICAL_MILE = 1.15077945;
 
     // proximity in miles
-    private int defaultProximityBuffer = 10;
+    private final int defaultProximityBuffer = 10;
     private int proximityBuffer = defaultProximityBuffer;
     private int attractionProximityRange = 200;
     private final GpsUtil gpsUtil;
     private final RewardCentral rewardsCentral;
+    private final Executor executor = Executors.newFixedThreadPool(1000);
 
     public RewardsService(GpsUtil gpsUtil, RewardCentral rewardCentral) {
         this.gpsUtil = gpsUtil;
@@ -36,25 +42,42 @@ public class RewardsService {
     }
 
     public void calculateRewards(User user) {
-
         List<VisitedLocation> userLocations = List.copyOf(user.getVisitedLocations());
         List<Attraction> attractions = List.copyOf(gpsUtil.getAttractions());
 
-        for (VisitedLocation visitedLocation : userLocations) {
-            for (Attraction attraction : attractions) {
-                if (nearAttraction(visitedLocation, attraction)) {
-                    user.addUserReward(new UserReward(visitedLocation, attraction, getRewardPoints(attraction, user)));
-                }
-            }
-        }
+        List<CompletableFuture<Void>> futures = userLocations.stream()
+                .flatMap(visitedLocation ->
+                        attractions.stream().filter(attraction -> nearAttraction(visitedLocation, attraction))
+                                .map(attraction -> calculateRewardAsync(visitedLocation, attraction, user))
+                ).toList();
+
+        CompletableFuture<Void> allOf = CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]));
+        allOf.join(); //execution de l'ajout de user reward
+    }
+
+    public void calculateRewards(List<User> users) {
+        ForkJoinPool customThreadPool = new ForkJoinPool(PARALLELISM);// je fixe le size du pool de threads
+
+        customThreadPool.submit(() ->
+                users.parallelStream().forEach(this::calculateRewards)
+        ).join();
+
+        customThreadPool.shutdown(); // suppression du pool
+
+    }
+
+    public CompletableFuture<Void> calculateRewardAsync(VisitedLocation visitedLocation, Attraction attraction, User user) {
+        return CompletableFuture.supplyAsync(() -> getRewardPoints(attraction, user), executor).thenAccept((integer) -> {
+            user.addUserReward(new UserReward(visitedLocation, attraction, integer));
+        });
     }
 
     public boolean isWithinAttractionProximity(Attraction attraction, Location location) {
-        return getDistance(attraction, location) > attractionProximityRange ? false : true;
+        return !(getDistance(attraction, location) > attractionProximityRange);
     }
 
     private boolean nearAttraction(VisitedLocation visitedLocation, Attraction attraction) {
-        return getDistance(attraction, visitedLocation.location) > proximityBuffer ? false : true;
+        return !(getDistance(attraction, visitedLocation.location) > proximityBuffer);
     }
 
     public int getRewardPoints(Attraction attraction, User user) {
